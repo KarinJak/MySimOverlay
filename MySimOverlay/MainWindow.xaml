@@ -10,18 +10,29 @@
 
     <Grid>
         <Border Background="#CC000000" CornerRadius="10" 
-                Width="300" Height="150" 
-                HorizontalAlignment="Right" VerticalAlignment="Bottom" 
-                Margin="20">
+            Width="300" Height="150" 
+            HorizontalAlignment="Right" VerticalAlignment="Bottom" 
+            Margin="20">
 
             <Grid>
                 <TextBlock Text="BRAKE TRACE" Foreground="Gray" FontSize="10" Margin="10,5,0,0" VerticalAlignment="Top"/>
 
+                <TextBlock Name="DebugText" Text="Raw: 0.00" Foreground="Yellow" FontSize="12" 
+                       HorizontalAlignment="Right" Margin="0,5,10,0" VerticalAlignment="Top"/>
+
                 <Canvas Name="GraphCanvas" Margin="10,20,10,10" ClipToBounds="True">
+
+                    <Polyline Name="ThrottleLine" 
+              Stroke="#00FF00" 
+              StrokeThickness="2" 
+              StrokeLineJoin="Round"
+              Opacity="0.8"/>
+
                     <Polyline Name="BrakeLine" 
-                              Stroke="Red" 
-                              StrokeThickness="2" 
-                              StrokeLineJoin="Round"/>
+              Stroke="Red" 
+              StrokeThickness="2" 
+              StrokeLineJoin="Round"/>
+
                 </Canvas>
             </Grid>
         </Border>
