@@ -4,105 +4,151 @@ using System.Windows;
 using System.Windows.Media;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
+using System.IO; // For saving the file
 
 namespace MySimOverlay
 {
     public partial class MainWindow : Window
     {
-        // --- SETTINGS ---
-        // Increase history slightly so the line doesn't disappear too fast on high-refresh screens
         private const int MAX_HISTORY = 300;
-
-        // --- DATA ---
         private readonly List<double> _brakeHistory = new List<double>();
         private readonly List<double> _throttleHistory = new List<double>();
-
-        // --- READER ---
         private LmuNativeReader _reader;
 
-        // --- CLICK THROUGH ---
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int WS_EX_LAYERED = 0x00080000;
+        private const int VK_END = 0x23;
+
         [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
         [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+
+        private bool _isLocked = true;
+        private bool _wasKeyPressed = false;
+        private readonly string _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "layout.txt");
 
         public MainWindow()
         {
             InitializeComponent();
-
             _reader = new LmuNativeReader();
 
-            // --- THE SMOOTH FIX ---
-            // Instead of a Timer, we hook into the Vertical Sync (V-Sync)
-            // This fires exactly when your monitor draws a new frame.
+            this.MouseLeftButtonDown += (s, e) => { if (!_isLocked) this.DragMove(); };
+
+            // LOAD SAVED POSITION
+            LoadLayout();
+
             CompositionTarget.Rendering += GameLoop;
+        }
+
+        private void LoadLayout()
+        {
+            if (File.Exists(_configPath))
+            {
+                try
+                {
+                    string[] parts = File.ReadAllText(_configPath).Split(',');
+                    if (parts.Length == 4)
+                    {
+                        this.Left = double.Parse(parts[0]);
+                        this.Top = double.Parse(parts[1]);
+                        this.Width = double.Parse(parts[2]);
+                        this.Height = double.Parse(parts[3]);
+                    }
+                }
+                catch { /* Ignore errors if file is corrupted */ }
+            }
+        }
+
+        private void SaveLayout()
+        {
+            try
+            {
+                // Save format: Left,Top,Width,Height
+                string layout = $"{this.Left},{this.Top},{this.Width},{this.Height}";
+                File.WriteAllText(_configPath, layout);
+            }
+            catch { /* Ignore errors */ }
         }
 
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            int extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-            SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+            SetWindowExTransparent(_isLocked);
+        }
+
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            SaveLayout(); // Save one last time before closing
+            Application.Current.Shutdown();
         }
 
         private void GameLoop(object sender, EventArgs e)
         {
-            double brakeInput = 0;
-            double throttleInput = 0;
+            bool isKeyPressed = (GetAsyncKeyState(VK_END) & 0x8000) != 0;
 
-            // 1. Connect
+            if (isKeyPressed && !_wasKeyPressed)
+            {
+                _isLocked = !_isLocked;
+                SetWindowExTransparent(_isLocked);
+
+                if (_isLocked)
+                {
+                    SaveLayout(); // AUTO-SAVE when you lock the window!
+                    MainBorder.Background = new SolidColorBrush(Color.FromArgb(68, 0, 0, 0));
+                    MainBorder.BorderThickness = new Thickness(0);
+                    this.ResizeMode = ResizeMode.NoResize;
+                    DebugText.Visibility = Visibility.Collapsed;
+                    CloseButton.Visibility = Visibility.Collapsed;
+                }
+                else
+                {
+                    MainBorder.Background = new SolidColorBrush(Color.FromArgb(180, 20, 20, 20));
+                    MainBorder.BorderBrush = Brushes.Yellow;
+                    MainBorder.BorderThickness = new Thickness(2);
+                    this.ResizeMode = ResizeMode.CanResizeWithGrip;
+                    DebugText.Visibility = Visibility.Visible;
+                    CloseButton.Visibility = Visibility.Visible;
+                    DebugText.Text = "EDIT MODE\n1. Drag to move\n2. Resize edges\n3. Press END to Lock & Save";
+                }
+            }
+            _wasKeyPressed = isKeyPressed;
+
             if (!_reader.IsConnected) _reader.Connect();
-
-            // 2. Get Data (No waiting, instant read)
             var result = _reader.GetInputs();
 
-            // Only update graphs if we actually found data or are searching
-            // (If result.Status is "Lock", we are good)
-            brakeInput = result.Brake;
-            throttleInput = result.Throttle;
+            _brakeHistory.Add(result.Brake);
+            _throttleHistory.Add(result.Throttle);
 
-            // 3. Update History
-            _brakeHistory.Add(brakeInput);
-            _throttleHistory.Add(throttleInput);
-
-            // Keep buffer size constant
             if (_brakeHistory.Count > MAX_HISTORY) _brakeHistory.RemoveAt(0);
             if (_throttleHistory.Count > MAX_HISTORY) _throttleHistory.RemoveAt(0);
 
-            // 4. Draw
             DrawTrace(BrakeLine, _brakeHistory);
             DrawTrace(ThrottleLine, _throttleHistory);
         }
 
+        private void SetWindowExTransparent(bool enable)
+        {
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            int extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+            if (enable)
+                SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+            else
+                SetWindowLong(hwnd, GWL_EXSTYLE, extendedStyle & ~WS_EX_TRANSPARENT);
+        }
+
         private void DrawTrace(System.Windows.Shapes.Polyline line, List<double> history)
         {
-            if (line == null) return;
+            if (line == null || GraphCanvas.ActualWidth == 0) return;
             line.Points.Clear();
-
-            double canvasWidth = GraphCanvas.ActualWidth;
-            double canvasHeight = GraphCanvas.ActualHeight;
-
-            // Optimization: Don't draw if window is hidden
-            if (canvasWidth == 0 || canvasHeight == 0) return;
-
-            // Calculate step size based on window width
-            double step = canvasWidth / MAX_HISTORY;
-
-            // Create points collection
+            double width = GraphCanvas.ActualWidth;
+            double height = GraphCanvas.ActualHeight;
+            double step = width / MAX_HISTORY;
             var points = new PointCollection(history.Count);
-
             for (int i = 0; i < history.Count; i++)
             {
-                double x = i * step;
-                double safeValue = Math.Clamp(history[i], 0.0, 1.0);
-                double y = canvasHeight - (safeValue * canvasHeight);
-
-                points.Add(new Point(x, y));
+                points.Add(new Point(i * step, height - (Math.Clamp(history[i], 0, 1) * height)));
             }
-
-            // Assigning the whole collection at once is faster than .Add() in a loop
             line.Points = points;
         }
     }
